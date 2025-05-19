@@ -1,0 +1,409 @@
+---
+title: "R Notebook"
+output:
+  word_document: default
+  html_notebook: default
+---
+BIS 581 - Product Sentiment Analysis
+
+
+
+# load libraries that you feel you need and explain why
+```{r codechunk-libraryload, echo=FALSE, message=FALSE, warning=FALSE}
+
+if (!("knitr" %in% installed.packages())) install.packages("knitr")
+
+library(knitr)
+
+# For text mining and natural language processing in a tidy data format.
+library(tidytext) 
+
+# Helps in reshaping and cleaning the data. 
+library(tidyr) 
+
+# Creating elegant network visualizations.
+library(ggraph) 
+
+# For graph/network analysis and visualization.
+library(igraph) 
+
+# For generating a word cloud to visualize word frequencies.
+library(wordcloud)
+
+# Provides a grammar of data manipulation verbs such as filter, select, and mutate.
+library(dplyr)
+
+# Provides text datasets for natural language processing, such as sentiment lexicons and pre-trained word embeddings.
+library(textdata)
+library(RColorBrewer)
+library(wordcloud)
+# Install and load stopwords package if not installed
+if (!requireNamespace("stopwords", quietly = TRUE)) install.packages("stopwords")
+
+# Load the package
+library(stopwords)
+# Install and load the required package
+if (!requireNamespace("stringr", quietly = TRUE)) install.packages("stringr")
+
+# Load stringr package
+library(stringr)
+
+# Install and load the required package
+if (!requireNamespace("tm", quietly = TRUE)) install.packages("tm")
+
+# Load tm package
+library(tm)
+
+
+```
+
+# Load the data from a file
+```{r code1, echo=FALSE, message=FALSE, warning=FALSE}
+options(stringsAsFactors = FALSE)
+
+#place your code file and data file in the same folder OR use this code and adjust it for your environment
+#folderst <- "D://data//myproject//"
+#setwd(folderst)
+
+posts <- readRDS("productsalescomments.rds")
+
+```
+
+
+# Assess the data
+```{r}
+# Viewing the dataset
+View(posts)
+
+```
+
+```{r}
+# Viewing the structure of dataset
+str(posts)
+
+# Display the first few rows
+head(posts)
+```
+# Is any data prep needed?   If so, adjust data here and comment on why in your submission
+```{r}
+# Cleaning T_Price and T_Cost columns by removing $ symbols and converting to numeric
+# To enable numerical analysis, as price and cost are currently stored as characters.
+posts_clean <- posts %>%
+  mutate(
+    # Removing non-numeric characters for calculations.
+    T_Price_numeric = as.numeric(gsub("[^0-9.]", "", T_Price)), 
+    T_Cost_numeric = as.numeric(gsub("[^0-9.]", "", T_Cost)),
+    
+    # Converting back to character format with '$'.
+    T_Price = paste0("$", format(T_Price_numeric, nsmall = 2)), 
+    T_Cost = paste0("$", format(T_Cost_numeric, nsmall = 2))  
+  )
+
+
+# Filling missing values in numeric columns with 0. To avoid issues with calculations due to missing values and maintain data consistency.
+numeric_columns <- c("Star_Rating", "T_Price_numeric", "T_Cost_numeric")
+posts_clean <- posts_clean %>%
+  mutate(across(all_of(numeric_columns), ~ ifelse(is.na(.), 0, .)))
+
+# Filling missing values in the Comment column with 'Unknown' and convert text to lowercase
+posts_clean <- posts_clean %>%
+  mutate(
+    # Replacing missing and blank comments
+    Comment = ifelse(is.na(Comment) | Comment == "", "unknown", Comment),
+    
+    # Replacing missing CustomerID with 0
+    CustomerID = ifelse(is.na(CustomerID), 0, CustomerID),
+    
+    # Converting all character fields to lowercase
+    across(where(is.character), tolower)                                    
+  )
+
+# Removing duplicate rows if any exist. To ensure each transaction is only counted once for accurate analysis.
+posts_clean <- posts_clean %>% distinct()
+
+str(posts_clean)
+head(posts_clean)
+
+```
+
+```{r}
+View(posts_clean)
+```
+
+# Decide if you want to filter
+```{r}
+
+# Filter out rows without meaningful comments or customer information
+# Filtering out rows where Comment is 'unknown' to focus on meaningful feedback.
+# Filtering out rows where CustomerID is '0' to ensure we can analyze customer behavior.
+posts_filtered <- posts_clean %>%
+  filter(Comment != "unknown", CustomerID != 0)
+str(posts_filtered)
+head(posts_filtered)
+
+```
+```{r}
+# Define a list of common ice cream-related words and phrases to remove
+remove_words <- c("ice", "cream", "vanilla", "chocolate", "strawberry", 
+                  "flavor", "cone", "scoop", "dessert", "topping", 
+                  "milkshake", "gelato", "sundae", "frozen", "custard", 
+                  "i'm", "too")  # Added "i'm" and "too"
+
+# 🔥 Step 1: Tokenize Comments and Remove Unwanted Words
+cleaned_comments <- posts_filtered %>%
+  unnest_tokens(word, Comment) %>%
+  filter(!word %in% remove_words) %>%
+  group_by(CustomerID) %>%
+  summarize(Clean_Comment = paste(word, collapse = " "), .groups = "drop")
+
+# 🔥 Step 2: Merge Cleaned Comments Back Into Original Dataset
+posts_filtered_cleaned <- posts_filtered %>%
+  select(-Comment) %>%  # Remove original Comment column
+  left_join(cleaned_comments, by = "CustomerID") %>%  # Merge cleaned comments
+  rename(Comment = Clean_Comment)  # Rename back to Comment
+
+# 🔥 Step 3: Ensure All Columns Are Present
+head(posts_filtered_cleaned)
+
+
+```
+
+
+
+
+# Now answer/create the following:
+
+1. Top 15 meaningful words
+```{r}
+# Create a custom stopword list
+custom_stopwords <- c(stopwords("en"), "i'm", "im", "m", "s", "t", "ve", "re", "ll", "d", "just", "like")  # Removes unwanted short words
+
+# 🔥 Step 1: Pre-clean the text before tokenization
+posts_filtered_cleaned <- posts_filtered_cleaned %>%
+  mutate(Comment = tolower(Comment),  # Convert everything to lowercase
+         Comment = str_replace_all(Comment, "\\b(i'm|im)\\b", ""),  # Remove "i'm" and "im"
+         Comment = removeWords(Comment, custom_stopwords),  # Remove all stopwords
+         Comment = str_replace_all(Comment, "[[:punct:]]", ""),  # Remove punctuation
+         Comment = str_squish(Comment))  # Remove extra spaces
+
+# 🔥 Step 2: Tokenization and Further Cleanup
+top_words <- posts_filtered_cleaned %>%
+  unnest_tokens(word, Comment) %>%
+  filter(nchar(word) > 1) %>%  # Removes single-letter words except "a" and "i"
+  count(word, sort = TRUE) %>%
+  slice_max(n, n = 15)
+
+# ✅ Step 3: Debugging Check
+print(unique(top_words$word))  # 🔍 Verify if "m" and "s" are removed
+
+# ✅ Step 4: View Cleaned Top 15 Words
+top_words
+```
+
+2. Word cloud
+```{r}
+set.seed(123)
+
+# Tokenize comments to words, remove stop words, and count word frequencies
+tokenized_comments <- posts_filtered_cleaned %>%
+  unnest_tokens(word, Comment) %>%
+  anti_join(stop_words) %>%
+  count(word, sort = TRUE)
+
+# Generating the word cloud with a custom color palette
+wordcloud(words = tokenized_comments$word, freq = tokenized_comments$n, min.freq = 5,
+          max.words = 100, random.order = FALSE, scale = c(3, 0.5), 
+          colors = brewer.pal(8, "Dark2"))
+
+```
+
+
+3. Who are the top 5 customers by CustomerID who posts the most comments on products?
+```{r}
+# Finding the top 5 customers by number of comments with tiebreaker by CustomerID
+top_customers <- posts_filtered_cleaned %>%
+  count(CustomerID, sort = TRUE) %>%
+  arrange(desc(n), CustomerID) %>% # Sorting by n, then by CustomerID for tiebreaking
+  slice_head(n = 5)                # Select the top 5 customers only
+
+top_customers
+
+```
+
+
+4. For each these 5 are these positive or negative customers overall considering a measure using the afinn sentiment measure?
+```{r}
+afinn <- get_sentiments("afinn")
+
+# Calculating AFINN Sentiment Score for Top 5 Customers
+sentiment_top_customers <- posts_filtered_cleaned %>%
+  filter(CustomerID %in% top_customers$CustomerID) %>%
+  unnest_tokens(word, Comment) %>%
+  inner_join(afinn, by = "word") %>%
+  group_by(CustomerID) %>%
+  summarize(sentiment_score = sum(value)) %>%
+  arrange(desc(sentiment_score))
+
+# Calculating Average Star Rating for Top 5 Customers
+average_rating_top_customers <- posts_filtered_cleaned %>%
+  filter(CustomerID %in% top_customers$CustomerID) %>%
+  group_by(CustomerID) %>%
+  summarize(avg_rating = mean(Star_Rating, na.rm = TRUE))
+
+# Combining Sentiment Scores and Ratings, and Classify Sentiment
+combined_sentiment <- sentiment_top_customers %>%
+  inner_join(average_rating_top_customers, by = "CustomerID") %>%
+  mutate(overall_sentiment = case_when(
+    avg_rating < 3 ~ "negative",
+    avg_rating >= 3 ~ "positive"
+  ))
+
+# View the overall sentiment for top customers
+combined_sentiment
+
+```
+
+5. What Parlor site has the most comments?  Are these negative or positive?
+
+```{r}
+# Finding the Parlor Site with the Most Comments
+most_comments_parlor <- posts_filtered_cleaned %>%
+  count(ParlorLocation, sort = TRUE) %>%
+  slice_max(n, n = 1)
+
+# Viewing the Parlor Site with the Most Comments
+most_comments_parlor
+
+# Filtering for the Parlor Site with the Most Comments
+parlor_with_most_comments <- posts_filtered_cleaned %>%
+  filter(ParlorLocation == most_comments_parlor$ParlorLocation)
+
+# Calculating Sentiment Score Using AFINN
+parlor_sentiment <- parlor_with_most_comments %>%
+  unnest_tokens(word, Comment) %>%
+  inner_join(afinn, by = "word") %>%
+  summarize(sentiment_score = sum(value))
+
+# Calculating Average Rating for the Parlor Site
+avg_rating_parlor <- parlor_with_most_comments %>%
+  summarize(avg_rating = mean(Star_Rating, na.rm = TRUE))
+
+# Determining Overall Sentiment for the Parlor Site
+overall_sentiment <- parlor_sentiment %>%
+  mutate(
+    ParlorLocation = most_comments_parlor$ParlorLocation,
+    num_comments = most_comments_parlor$n,
+    avg_rating = avg_rating_parlor$avg_rating,
+    overall_sentiment = case_when(
+      avg_rating < 3 ~ "negative",
+      avg_rating >= 3 ~ "positive"
+    )
+  )
+
+# View the Overall Sentiment for the Parlor with the Most Comments
+overall_sentiment
+
+
+```
+
+6. What production site has the most comments?  Are these negative or positive?
+```{r}
+
+# Finding the Production Site with the Most Comments
+most_comments_production <- posts_filtered_cleaned %>%
+  count(ProductionLocation, sort = TRUE) %>%
+  slice_max(n, n = 1)
+
+# View the Production Site with the Most Comments
+most_comments_production
+
+# Filtering for the Production Site with the Most Comments
+production_with_most_comments <- posts_filtered_cleaned %>%
+  filter(ProductionLocation == most_comments_production$ProductionLocation)
+
+# Calculating Sentiment Score Using AFINN
+production_sentiment <- production_with_most_comments %>%
+  unnest_tokens(word, Comment) %>%
+  inner_join(afinn, by = "word") %>%
+  summarize(sentiment_score = sum(value))
+
+# Calculating Average Rating for the Production Site
+avg_rating_production <- production_with_most_comments %>%
+  summarize(avg_rating = mean(Star_Rating, na.rm = TRUE))
+
+# Determining Overall Sentiment for the Production Site
+overall_production_sentiment <- production_sentiment %>%
+  mutate(overall_sentiment = case_when(
+    avg_rating_production$avg_rating < 3 ~ "negative",
+    avg_rating_production$avg_rating >= 3 ~ "positive"
+  ))
+
+# View the Overall Sentiment for the Production Site with the Most Comments
+overall_production_sentiment
+
+```
+
+7. What are the top 10 most frequent comments made by customers and how many times did each comment get made?
+```{r}
+# Step 1: Count the Frequency of Each Comment
+top_comments <- posts_filtered_cleaned %>%
+  group_by(Comment) %>%
+  summarize(comment_count = n()) %>%
+  arrange(desc(comment_count))
+
+# Step 2: Select the Top 10 Most Frequent Comments Without Ties
+top_10_comments <- top_comments %>%
+  slice_max(comment_count, n = 10, with_ties = FALSE)
+
+# View the Top 10 Most Frequent Comments
+top_10_comments
+
+
+```
+
+8. Create a network diagram based on bigrams
+```{r}
+# Tokenize Comments into Bigrams and Remove Stop Words
+bigrams <- posts_filtered_cleaned %>%
+  unnest_tokens(bigram, Comment, token = "ngrams", n = 2) %>%
+  separate(bigram, c("word1", "word2"), sep = " ") %>%
+  filter(!word1 %in% stop_words$word, !word2 %in% stop_words$word) %>%
+  filter(word1 != "NA" & word2 != "NA") # Remove any "NA" values
+
+# Count the Frequency of Each Bigram
+bigram_counts <- bigrams %>%
+  count(word1, word2, sort = TRUE) %>%
+  filter(n > 3) # Lower frequency threshold to only include more frequent bigrams
+
+# Limit to Top 15 Most Frequent Bigrams
+bigram_top_15 <- bigram_counts %>%
+  slice_max(n, n = 15)
+
+# Create a Graph from the Bigrams
+bigram_graph <- bigram_top_15 %>%
+  graph_from_data_frame()
+
+# Plot the Network Diagram
+set.seed(123)
+ggraph(bigram_graph, layout = "fr") +
+  geom_edge_link(aes(edge_alpha = n), show.legend = FALSE, edge_width = 1.5) +
+  geom_node_point(color = "steelblue", size = 8) + # Simplify node color and make nodes larger
+  geom_node_text(aes(label = name), repel = TRUE, vjust = 1, hjust = 1, size = 5, color = "black") + # Use larger labels for clarity
+  theme_void() +
+  labs(title = "Network Diagram")
+```
+
+
+GRADS----
+assuming you work for the company/organization for which these product comments have been collected, 
+what can you infer from the data? 
+If the company was asking you if they should take any actions based on customer feedback, 
+what would you tell them and why?
+
+Actions to be taken:
+Marketing Campaigns: Focus on popular flavors to boost interest and attract new customers.
+
+Customer Testimonials: Use positive customer feedback in promotional material.
+
+Supply Chain Improvements: Ensure the availability of popular products to meet demand.
+Highlight and promote seasonal or uncommon flavors to generate excitement.
